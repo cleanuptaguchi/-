@@ -146,7 +146,7 @@
 <script>
 // ==== 設定 ====
 // GASのWebアプリを「デプロイ」した際に発行されるURLをここに設定する
-const GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbxx3MgVsC1MI1SMWqimvCHhFdMvzOCtkIGmLcuRpeIQODhpU3OEL-R31dljviCC34Yq/exec";
+const GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbwkd-Ek8L3X1cAvP3_yj97nGEm_vnlZnpjnXnElqiqp99QtXcFXZrsVOlxz8tk-QlYX/exec";
 // LINE Developersコンソールで発行したLIFF IDをここに設定する
 const LIFF_ID = "2011535057-G3xrMYN6";
 
@@ -180,7 +180,13 @@ async function main() {
 }
 
 async function refreshStatus() {
-  const res = await fetch(`${GAS_WEB_APP_URL}?action=status&userId=${encodeURIComponent(profile.userId)}`);
+  // GASのWebアプリはキャッシュ制御ヘッダーを返さないため、
+  // ブラウザ側のキャッシュで古いステータスが表示され続けないよう明示的に無効化する
+  const cacheBuster = Date.now();
+  const res = await fetch(
+    `${GAS_WEB_APP_URL}?action=status&userId=${encodeURIComponent(profile.userId)}&_=${cacheBuster}`,
+    { cache: "no-store" }
+  );
   const data = await res.json();
   if (!data.ok) {
     showError(data.message || "ステータスの取得に失敗しました。");
