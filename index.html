@@ -116,6 +116,16 @@
     font-size: 15px;
     padding: 60px 0;
   }
+  .toast {
+    margin-top: 16px;
+    padding: 14px 16px;
+    border-radius: 10px;
+    background: var(--working-bg);
+    color: var(--working);
+    font-size: 15px;
+    font-weight: 600;
+    text-align: center;
+  }
   .hidden { display: none; }
 </style>
 </head>
@@ -140,18 +150,32 @@
     </div>
 
     <div class="error-box" id="errorBox"></div>
+    <div class="toast hidden" id="toast"></div>
   </div>
 </div>
 
 <script>
 // ==== 設定 ====
 // GASのWebアプリを「デプロイ」した際に発行されるURLをここに設定する
-const GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbwkd-Ek8L3X1cAvP3_yj97nGEm_vnlZnpjnXnElqiqp99QtXcFXZrsVOlxz8tk-QlYX/exec";
+const GAS_WEB_APP_URL = "https://script.google.com/macros/s/【デプロイID】/exec";
 // LINE Developersコンソールで発行したLIFF IDをここに設定する
-const LIFF_ID = "2011535057-G3xrMYN6";
+const LIFF_ID = "【LIFF ID】";
 
 let profile = null;
 let currentStatus = "未出勤"; // 未出勤 / 勤務中 / 休憩中 / 退勤済
+let currentLastTime = null;
+let isSubmitting = false; // GASへの送信が完了していない間はtrue
+
+// 打刻の送信が終わる前にページを離れようとした場合に確認を出す
+// (注: 近年のブラウザは独自メッセージを表示せず、ブラウザ標準の文言に置き換えられることが多いが、
+//  確認ダイアログ自体は表示されるため離脱防止として機能する)
+window.addEventListener("beforeunload", function (e) {
+  if (isSubmitting) {
+    e.preventDefault();
+    e.returnValue = "データ送信中です。本当にこのページを離れますか？";
+    return e.returnValue;
+  }
+});
 
 const STATUS_LABEL = {
   "未出勤": "未出勤",
@@ -193,6 +217,7 @@ async function refreshStatus() {
     return;
   }
   currentStatus = data.status;
+  currentLastTime = data.lastTime;
   renderStatus(data.status, data.lastTime);
 }
 
@@ -229,6 +254,11 @@ function renderStatus(status, lastTime) {
 async function punch(type) {
   hideError();
   setButtonsDisabled(true);
+
+  // 楽観的UI: 通信結果を待たず、即座に完了メッセージを表示する
+  showToast("打刻が完了しました");
+  isSubmitting = true;
+
   try {
     const res = await fetch(GAS_WEB_APP_URL, {
       method: "POST",
@@ -241,17 +271,37 @@ async function punch(type) {
       })
     });
     const data = await res.json();
+
     if (!data.ok) {
-      showError(data.message || "打刻に失敗しました。もう一度お試しください。");
+      // サーバー側で打刻が拒否された(バリデーションエラーなど) → 楽観的表示を取り消す
+      hideToast();
+      alert(data.message || "打刻に失敗しました。再試行してください。");
+      renderStatus(currentStatus, currentLastTime); // ボタン表示を元の状態に戻す
       return;
     }
+
+    // 成功: 実際のステータスを取得し直して画面を正とする
     await refreshStatus();
+    setTimeout(hideToast, 2500); // 完了メッセージは数秒で自動的に消す
   } catch (err) {
-    showError("通信に失敗しました。電波の良い場所でもう一度お試しください。");
+    // 通信自体が失敗した場合 → 楽観的表示を取り消す
+    hideToast();
+    alert("打刻に失敗しました。再試行してください。");
+    renderStatus(currentStatus, currentLastTime); // ボタン表示を元の状態に戻す
     console.error(err);
   } finally {
+    isSubmitting = false;
     setButtonsDisabled(false);
   }
+}
+
+function showToast(msg) {
+  const toast = document.getElementById("toast");
+  toast.textContent = msg;
+  toast.classList.remove("hidden");
+}
+function hideToast() {
+  document.getElementById("toast").classList.add("hidden");
 }
 
 function setButtonsDisabled(disabled) {
