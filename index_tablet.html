@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>オフィス共有打刻端末</title>
+<style>
+  :root {
+    --primary: #0F766E;
+    --primary-bg: #E1F2EF;
+    --bg: #F4F6F8;
+    --card: #FFFFFF;
+    --ink: #1C2B2D;
+    --sub: #5B6E6C;
+    --border: #DCE3E2;
+    --working: #0F766E;
+    --off: #6B7280;
+    --danger: #B42318;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    padding: 24px;
+  }
+  .container {
+    max-width: 1080px;
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: 1.2fr 0.8fr;
+    gap: 24px;
+  }
+  @media (max-width: 768px) {
+    .container { grid-template-columns: 1fr; }
+  }
+  .panel {
+    background: var(--card);
+    border-radius: 20px;
+    padding: 28px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+    border: 1px solid var(--border);
+  }
+  h2 {
+    margin: 0 0 20px 0;
+    font-size: 20px;
+    color: var(--ink);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  /* 社員一覧のグリッドボタン */
+  .staff-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 16px;
+    max-height: 520px;
+    overflow-y: auto;
+  }
+  .staff-card {
+    background: var(--bg);
+    border: 2px solid var(--border);
+    border-radius: 16px;
+    padding: 16px;
+    text-align: center;
+    transition: all 0.15s ease;
+  }
+  .staff-card.working {
+    background: var(--primary-bg);
+    border-color: #A0D8CE;
+  }
+  .staff-card .name {
+    font-size: 18px;
+    font-weight: bold;
+    margin-bottom: 6px;
+    color: var(--ink);
+  }
+  .staff-card .status-tag {
+    display: inline-block;
+    font-size: 12px;
+    font-weight: bold;
+    padding: 4px 8px;
+    border-radius: 6px;
+    margin-bottom: 12px;
+    background: #E5E7EB;
+    color: var(--off);
+  }
+  .staff-card.working .status-tag {
+    background: var(--primary);
+    color: #fff;
+  }
+  .staff-card .btn-actions {
+    display: flex;
+    gap: 8px;
+  }
+  .staff-card button {
+    flex: 1;
+    padding: 12px 6px;
+    font-size: 15px;
+    font-weight: bold;
+    border: none;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: opacity 0.2s, transform 0.1s;
+  }
+  .staff-card button:active { transform: scale(0.96); }
+  .btn-in { background: var(--primary); color: #fff; }
+  .btn-out { background: #4B5563; color: #fff; }
+  button:disabled { opacity: 0.25; cursor: not-allowed; }
+
+  /* 右側：社内ステータス一覧 */
+  .status-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-height: 520px;
+    overflow-y: auto;
+  }
+  .status-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 14px 16px;
+    border-radius: 12px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+  }
+  .status-item.working {
+    background: var(--primary-bg);
+    border-color: #B2E2D9;
+  }
+  .badge {
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: bold;
+  }
+  .badge.working { background: var(--working); color: #fff; }
+  .badge.off { background: #E5E7EB; color: var(--off); }
+  .badge.done { background: #D1D5DB; color: #374151; }
+  .time-info { font-size: 12px; color: var(--sub); margin-top: 2px; }
+
+  .toast {
+    margin-top: 16px;
+    padding: 14px;
+    border-radius: 12px;
+    background: var(--primary-bg);
+    color: var(--primary);
+    font-weight: bold;
+    text-align: center;
+    font-size: 15px;
+  }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <!-- 左パネル：個別の社員打刻ボタン一覧 -->
+  <div class="panel">
+    <h2>📱 タブレット打刻</h2>
+    
+    <div id="staffGrid" class="staff-grid">
+      <div style="text-align: center; color: var(--sub); grid-column: 1/-1; padding: 40px;">読み込み中です…</div>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
+  </div>
+
+  <!-- 右パネル：現在の社内ステータス一覧 -->
+  <div class="panel">
+    <h2>👥 本日の勤務状況 <small style="font-size: 13px; font-weight: normal; color: var(--sub);" id="lastUpdate"></small></h2>
+    <div id="statusList" class="status-list">
+      <div style="text-align: center; color: var(--sub); padding: 40px;">取得中…</div>
+    </div>
+  </div>
+</div>
+
+<script>
+const GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbwkd-Ek8L3X1cAvP3_yj97nGEm_vnlZnpjnXnElqiqp99QtXcFXZrsVOlxz8tk-QlYX/exec";
+
+let staffMembersData = [];
+
+async function init() {
+  await fetchTabletData();
+  // 30秒ごとに自動更新（リアルタイム同期）
+  setInterval(fetchTabletData, 30000);
+}
+
+async function fetchTabletData() {
+  try {
+    const res = await fetch(`${GAS_WEB_APP_URL}?action=tabletData&_=${Date.now()}`, { cache: "no-store" });
+    const data = await res.json();
+    if (data.ok) {
+      staffMembersData = data.staffMembers;
+      renderStaffGrid();
+      renderStatusList();
+      document.getElementById("lastUpdate").textContent = `更新: ${new Date().toLocaleTimeString('ja-JP', {hour: '2-digit', minute:'2-digit'})}`;
+    }
+  } catch (err) {
+    console.error("データ取得エラー:", err);
+  }
+}
+
+// 左側：ボタン型カードの一覧を表示
+function renderStaffGrid() {
+  const grid = document.getElementById("staffGrid");
+  grid.innerHTML = "";
+
+  if (staffMembersData.length === 0) {
+    grid.innerHTML = '<div style="text-align: center; color: var(--sub); grid-column: 1/-1;">スタッフマスタにデータがありません</div>';
+    return;
+  }
+
+  staffMembersData.forEach(staff => {
+    const card = document.createElement("div");
+    const isWorking = staff.status === "勤務中";
+    card.className = `staff-card ${isWorking ? 'working' : ''}`;
+
+    const canClockIn = staff.status === "未出勤" || staff.status === "退勤済";
+    const canClockOut = staff.status === "勤務中";
+
+    card.innerHTML = `
+      <div class="name">${staff.name}</div>
+      <div class="status-tag">${staff.status}</div>
+      <div class="btn-actions">
+        <button class="btn-in" ${!canClockIn ? 'disabled' : ''} onclick="punch('${staff.userId}', '${staff.name}', 'clockIn')">出勤</button>
+        <button class="btn-out" ${!canClockOut ? 'disabled' : ''} onclick="punch('${staff.userId}', '${staff.name}', 'clockOut')">退勤</button>
+      </div>
+    `;
+    grid.appendChild(card);
+  });
+}
+
+// 右側：ステータス一覧
+function renderStatusList() {
+  const listEl = document.getElementById("statusList");
+  listEl.innerHTML = "";
+
+  staffMembersData.forEach(staff => {
+    const item = document.createElement("div");
+    const isWorking = staff.status === "勤務中";
+    item.className = `status-item ${isWorking ? 'working' : ''}`;
+
+    let badgeClass = "off";
+    if (staff.status === "勤務中") badgeClass = "working";
+    if (staff.status === "退勤済") badgeClass = "done";
+
+    let timeText = "";
+    if (staff.status === "勤務中" && staff.startTime) {
+      timeText = `出勤 ${staff.startTime}〜`;
+    } else if (staff.status === "退勤済" && staff.startTime && staff.endTime) {
+      timeText = `${staff.startTime} 〜 ${staff.endTime}`;
+    }
+
+    item.innerHTML = `
+      <div>
+        <div style="font-weight: bold; font-size: 16px;">${staff.name}</div>
+        ${timeText ? `<div class="time-info">${timeText}</div>` : ''}
+      </div>
+      <span class="badge ${badgeClass}">${staff.status}</span>
+    `;
+    listEl.appendChild(item);
+  });
+}
+
+async function punch(userId, name, type) {
+  const label = type === "clockIn" ? "出勤" : "退勤";
+
+  // 押し間違い防止のポップアップ確認
+  if (!confirm(`${name} さん、${label}打刻しますか？`)) {
+    return;
+  }
+
+  showToast(`${name} さんの${label}処理中…`);
+
+  try {
+    const res = await fetch(GAS_WEB_APP_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({
+        userId: userId,
+        name: name,
+        type: type
+      })
+    });
+    const data = await res.json();
+
+    if (data.ok) {
+      showToast(data.message || `${name} さんの${label}を記録しました！`);
+      await fetchTabletData(); // ボタンとステータスを即座に再読み込み
+    } else {
+      alert(data.message || "打刻に失敗しました。");
+    }
+  } catch (err) {
+    alert("通信エラーが発生しました。");
+    console.error(err);
+  }
+}
+
+function showToast(msg) {
+  const toast = document.getElementById("toast");
+  toast.textContent = msg;
+  toast.classList.remove("hidden");
+  setTimeout(() => toast.classList.add("hidden"), 3500);
+}
+
+init();
+</script>
+</body>
+</html>
