@@ -13,8 +13,6 @@
     --card-bg: #EAF4F1;
     --working: #0F766E;
     --working-bg: #E1F2EF;
-    --break: #B45309;
-    --break-bg: #FBEEDD;
     --off: #6B7280;
     --off-bg: #EEEFF1;
     --danger: #B42318;
@@ -50,7 +48,6 @@
     transition: background 0.2s ease;
   }
   .status-card.working { background: var(--working-bg); }
-  .status-card.onbreak { background: var(--break-bg); }
   .status-card .label {
     font-size: 14px;
     color: var(--sub);
@@ -62,7 +59,6 @@
     color: var(--off);
   }
   .status-card.working .status-text { color: var(--working); }
-  .status-card.onbreak .status-text { color: var(--break); }
   .status-card .time-text {
     margin-top: 10px;
     font-size: 14px;
@@ -87,15 +83,6 @@
   .btn-primary {
     background: var(--working);
     color: #FFFFFF;
-  }
-  .btn-primary.break-variant { background: var(--break); }
-  .btn-secondary {
-    background: #FFFFFF;
-    color: var(--ink);
-    border: 1px solid var(--border);
-    font-weight: 500;
-    font-size: 15px;
-    padding: 14px;
   }
   button:disabled {
     opacity: 0.5;
@@ -146,7 +133,6 @@
 
     <div class="actions">
       <button class="btn-primary" id="primaryBtn"></button>
-      <button class="btn-secondary hidden" id="secondaryBtn"></button>
     </div>
 
     <div class="error-box" id="errorBox"></div>
@@ -156,20 +142,16 @@
 
 <script>
 // ==== 設定 ====
-// GASのWebアプリを「デプロイ」した際に発行されるURLをここに設定する
 const GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbwkd-Ek8L3X1cAvP3_yj97nGEm_vnlZnpjnXnElqiqp99QtXcFXZrsVOlxz8tk-QlYX/exec";
-// LINE Developersコンソールで発行したLIFF IDをここに設定する
 const LIFF_ID = "2011535057-G3xrMYN6";
 
 let profile = null;
-let currentStatus = "未出勤"; // 未出勤 / 勤務中 / 休憩中 / 退勤済
-let currentStartTime = null; // 当日の出勤(労働開始)時刻
-let currentEndTime = null;   // 当日の退勤(完了)時刻
-let isSubmitting = false; // GASへの送信が完了していない間はtrue
+let currentStatus = "未出勤"; // 未出勤 / 勤務中 / 退勤済
+let currentStartTime = null; 
+let currentEndTime = null;   
+let isSubmitting = false; 
 
-// 打刻の送信が終わる前にページを離れようとした場合に確認を出す
-// (注: 近年のブラウザは独自メッセージを表示せず、ブラウザ標準の文言に置き換えられることが多いが、
-//  確認ダイアログ自体は表示されるため離脱防止として機能する)
+// 打刻完了前の離脱防止ダイアログ
 window.addEventListener("beforeunload", function (e) {
   if (isSubmitting) {
     e.preventDefault();
@@ -181,7 +163,6 @@ window.addEventListener("beforeunload", function (e) {
 const STATUS_LABEL = {
   "未出勤": "未出勤",
   "勤務中": "勤務中",
-  "休憩中": "休憩中",
   "退勤済": "退勤済み"
 };
 
@@ -205,8 +186,6 @@ async function main() {
 }
 
 async function refreshStatus() {
-  // GASのWebアプリはキャッシュ制御ヘッダーを返さないため、
-  // ブラウザ側のキャッシュで古いステータスが表示され続けないよう明示的に無効化する
   const cacheBuster = Date.now();
   const res = await fetch(
     `${GAS_WEB_APP_URL}?action=status&userId=${encodeURIComponent(profile.userId)}&_=${cacheBuster}`,
@@ -225,40 +204,30 @@ async function refreshStatus() {
 
 function renderStatus(status, startTime, endTime) {
   const card = document.getElementById("statusCard");
-  card.classList.remove("working", "onbreak");
+  card.classList.remove("working");
   if (status === "勤務中") card.classList.add("working");
-  if (status === "休憩中") card.classList.add("onbreak");
 
   document.getElementById("statusText").textContent = STATUS_LABEL[status] || status;
 
-  // 出勤時刻(労働開始時間)・退勤時刻(完了時間)の表示
+  // 出勤・退勤時間の表示
   const timeDetail = document.getElementById("timeDetail");
   if (status === "退勤済" && startTime && endTime) {
     timeDetail.textContent = `出勤 ${startTime} 〜 退勤 ${endTime}`;
-  } else if ((status === "勤務中" || status === "休憩中") && startTime) {
+  } else if (status === "勤務中" && startTime) {
     timeDetail.textContent = `出勤 ${startTime} から勤務中`;
   } else {
     timeDetail.textContent = "";
   }
 
   const primaryBtn = document.getElementById("primaryBtn");
-  const secondaryBtn = document.getElementById("secondaryBtn");
-  primaryBtn.classList.remove("break-variant");
-  secondaryBtn.classList.add("hidden");
 
+  // ステータスに応じたボタンの切り替え（出勤 または 退勤 のみ）
   if (status === "未出勤" || status === "退勤済") {
     primaryBtn.textContent = "出勤する";
     primaryBtn.onclick = () => punch("clockIn");
   } else if (status === "勤務中") {
     primaryBtn.textContent = "退勤する";
     primaryBtn.onclick = () => punch("clockOut");
-    secondaryBtn.textContent = "休憩に入る";
-    secondaryBtn.classList.remove("hidden");
-    secondaryBtn.onclick = () => punch("breakStart");
-  } else if (status === "休憩中") {
-    primaryBtn.classList.add("break-variant");
-    primaryBtn.textContent = "休憩から戻る";
-    primaryBtn.onclick = () => punch("breakEnd");
   }
 }
 
@@ -266,14 +235,14 @@ async function punch(type) {
   hideError();
   setButtonsDisabled(true);
 
-  // 楽観的UI: 通信結果を待たず、即座に完了メッセージを表示する
-  showToast("打刻が完了しました");
+  // 楽観的UI: 通信結果を待たず即座にメッセージ表示
+  const label = type === "clockIn" ? "出勤" : "退勤";
+  showToast(`${label}の打刻を受け付けました`);
   isSubmitting = true;
 
   try {
     const res = await fetch(GAS_WEB_APP_URL, {
       method: "POST",
-      // GASのdoPostでCORSプリフライトを避けるためtext/plainで送る
       headers: { "Content-Type": "text/plain;charset=utf-8" },
       body: JSON.stringify({
         userId: profile.userId,
@@ -284,21 +253,23 @@ async function punch(type) {
     const data = await res.json();
 
     if (!data.ok) {
-      // サーバー側で打刻が拒否された(バリデーションエラーなど) → 楽観的表示を取り消す
       hideToast();
       alert(data.message || "打刻に失敗しました。再試行してください。");
-      renderStatus(currentStatus, currentStartTime, currentEndTime); // ボタン表示を元の状態に戻す
+      renderStatus(currentStatus, currentStartTime, currentEndTime);
       return;
     }
 
-    // 成功: 実際のステータスを取得し直して画面を正とする
+    // サーバーの返答メッセージ（GAS側で計算された実働・休憩時間など）があれば表示
+    if (data.message) {
+      showToast(data.message);
+    }
+
     await refreshStatus();
-    setTimeout(hideToast, 2500); // 完了メッセージは数秒で自動的に消す
+    setTimeout(hideToast, 2500);
   } catch (err) {
-    // 通信自体が失敗した場合 → 楽観的表示を取り消す
     hideToast();
     alert("打刻に失敗しました。再試行してください。");
-    renderStatus(currentStatus, currentStartTime, currentEndTime); // ボタン表示を元の状態に戻す
+    renderStatus(currentStatus, currentStartTime, currentEndTime);
     console.error(err);
   } finally {
     isSubmitting = false;
@@ -317,7 +288,6 @@ function hideToast() {
 
 function setButtonsDisabled(disabled) {
   document.getElementById("primaryBtn").disabled = disabled;
-  document.getElementById("secondaryBtn").disabled = disabled;
 }
 
 function showError(msg) {
