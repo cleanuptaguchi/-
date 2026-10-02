@@ -158,7 +158,7 @@
 <body>
 
 <div class="container">
-  <!-- 左パネル：個別の社員打刻ボタン一覧（EMPからのIDのみ表示） -->
+  <!-- 左パネル：個別の社員打刻ボタン一覧（スタッフマスタtabletに登録されている全員を表示） -->
   <div class="panel">
     <h2>📱 タブレット打刻</h2>
     
@@ -169,7 +169,7 @@
     <div id="toast" class="toast hidden"></div>
   </div>
 
-  <!-- 右パネル：現在の社内ステータス一覧（全員・勤務順ソート） -->
+  <!-- 右パネル：現在の社内ステータス一覧（勤務中 ➔ 退勤済 ➔ 未出勤 の順で表示） -->
   <div class="panel">
     <h2>👥 本日の勤務状況 <small style="font-size: 13px; font-weight: normal; color: var(--sub);" id="lastUpdate"></small></h2>
     <div id="statusList" class="status-list">
@@ -204,20 +204,17 @@ async function fetchTabletData() {
   }
 }
 
-// 左側：EMPから始まるIDを持つスタッフのみ打刻ボタンカードを生成
+// 左側：スタッフマスタtabletに設定されたスタッフの打刻ボタンカードを生成
 function renderStaffGrid() {
   const grid = document.getElementById("staffGrid");
   grid.innerHTML = "";
 
-  // userId が 'EMP' で始まる人のみを抽出
-  const empMembers = staffMembersData.filter(s => String(s.userId).toUpperCase().startsWith("EMP"));
-
-  if (empMembers.length === 0) {
+  if (staffMembersData.length === 0) {
     grid.innerHTML = '<div style="text-align: center; color: var(--sub); grid-column: 1/-1;">対象のスタッフがありません</div>';
     return;
   }
 
-  empMembers.forEach(staff => {
+  staffMembersData.forEach(staff => {
     const card = document.createElement("div");
     const isWorking = staff.status === "勤務中";
     card.className = `staff-card ${isWorking ? 'working' : ''}`;
@@ -237,7 +234,7 @@ function renderStaffGrid() {
   });
 }
 
-// 右側：全員のステータス一覧（勤務中 ➔ 退勤済 ➔ 未出勤 の順にソート）
+// 右側：ステータス一覧（勤務中 ➔ 退勤済 ➔ 未出勤 の順にソート）
 function renderStatusList() {
   const listEl = document.getElementById("statusList");
   listEl.innerHTML = "";
