@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>勤怠打刻</title>
+<link rel="preconnect" href="https://script.google.com">
+<link rel="preconnect" href="https://script.googleusercontent.com">
 <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
 <style>
   :root {
@@ -76,6 +78,13 @@
     margin-top: 16px; padding: 14px 16px; border-radius: 10px;
     background: var(--working-bg); color: var(--working); font-size: 15px; font-weight: 600; text-align: center; white-space: pre-line;
   }
+  .toast.pending { background: #EEF2F6; color: #334155; }
+  .spinner {
+    display: inline-block; width: 14px; height: 14px; border: 2px solid currentColor; border-right-color: transparent;
+    border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: -2px; margin-right: 6px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .refreshing { text-align: center; font-size: 12px; color: var(--sub); margin-top: 8px; min-height: 16px; }
   .hidden { display: none !important; }
 </style>
 </head>
@@ -95,6 +104,7 @@
         <div class="status-text" id="statusText">-</div>
         <div class="time-text" id="timeDetail"></div>
       </div>
+      <div class="refreshing" id="refreshing"></div>
 
       <div class="notice hidden" id="notice"></div>
 
@@ -130,20 +140,36 @@ window.addEventListener("beforeunload", function (e) {
   }
 });
 
+const CACHE_KEY = "kintai_last_state";
+function loadCache() { try { return JSON.parse(localStorage.getItem(CACHE_KEY) || "null"); } catch (_) { return null; } }
+function saveCache(d) { try { localStorage.setItem(CACHE_KEY, JSON.stringify(d)); } catch (_) {} }
+function setRefreshing(on) { document.getElementById("refreshing").textContent = on ? "最新の状態を確認しています…" : ""; }
+
 async function main() {
+  // 前回の状態があれば、通信を待たずにすぐ表示する
+  const cached = loadCache();
+  if (cached) {
+    state = cached;
+    document.getElementById("loadingView").classList.add("hidden");
+    document.getElementById("mainView").classList.remove("hidden");
+    render();
+    setRefreshing(true);
+  }
   try {
     await liff.init({ liffId: LIFF_ID });
     if (!liff.isLoggedIn()) {
       liff.login();
       return;
     }
-    profile = await liff.getProfile();
+    const tok = liff.getDecodedIDToken();
+    profile = { displayName: (tok && tok.name) || "" }; // プロフィール取得の通信を省く
     const data = await api("status");
     handleResponse(data);
   } catch (err) {
     console.error(err);
     showError("画面の読み込みに失敗しました。もう一度開き直してください。");
   } finally {
+    setRefreshing(false);
     document.getElementById("loadingView").classList.add("hidden");
     document.getElementById("mainView").classList.remove("hidden");
   }
@@ -167,6 +193,8 @@ async function api(action, extra) {
 function handleResponse(data) {
   if (!data.ok) {
     if (data.code === "UNREGISTERED") {
+      try { localStorage.removeItem(CACHE_KEY); } catch (_) {}
+      document.getElementById("staffView").classList.add("hidden");
       showUnregistered(data.userId);
     } else {
       showError(data.message || "エラーが発生しました。");
@@ -174,6 +202,7 @@ function handleResponse(data) {
     return false;
   }
   state = data;
+  saveCache(data);
   hideError();
   render();
   return true;
@@ -242,29 +271,53 @@ function render() {
   document.getElementById("sessionsBox").classList.toggle("hidden", !(state.sessions || []).length);
 }
 
-async function punch(type, job) {
-  if (isSubmitting) return;
-  hideError();
-  const setDisabled = v => document.querySelectorAll("#actions button").forEach(b => { b.disabled = v; });
-  setDisabled(true);
-  showToast((type === "clockIn" ? "出勤" : "退勤") + "を送信中です…");
-  isSubmitting = true;
+function hhmm(d) { return d.toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit", hour12: false }); }
 
+/** サーバーの返事を待たずに、打刻後の状態を先に画面へ出す（楽観的UI） */
+function optimistic(st, type, job) {
+  const t = hhmm(new Date());
+  const sessions = (st.sessions || []).map(x => Object.assign({}, x));
+  if (type === "clockIn") {
+    sessions.push({ start: t, end: "", job: job || (st.jobs || [])[0] || "", location: st.workLocation, status: "勤務中" });
+    return Object.assign({}, st, { status: "勤務中", since: t, openLocation: st.workLocation, sessions });
+  }
+  const open = [...sessions].reverse().find(x => !x.end);
+  if (open) { open.end = t; open.status = "完了"; }
+  return Object.assign({}, st, { status: "退勤済", since: null, openLocation: null, sessions });
+}
+
+async function punch(type, job) {
+  if (isSubmitting || !state) return;
+  hideError();
+  const before = state;
+  const label = type === "clockIn" ? "出勤" : "退勤";
+
+  // 1) すぐに画面を切り替える
+  isSubmitting = true;
+  state = optimistic(before, type, job);
+  render();
+  document.querySelectorAll("#actions button").forEach(b => { b.disabled = true; });
+  showToast(label + "を記録しています…\n画面を閉じずに少しお待ちください", true);
+
+  // 2) 裏でサーバーに送る
   try {
     const data = await api("punch", { type: type, job: job });
+    isSubmitting = false;
     if (handleResponse(data)) {
-      showToast(data.message);
+      showToast("✓ " + data.message);
       setTimeout(hideToast, 4000);
     } else {
+      state = before; // 元に戻す
+      render();
       hideToast();
     }
   } catch (err) {
     console.error(err);
-    hideToast();
-    showError("通信に失敗しました。電波の良い場所で、もう一度お試しください。");
-  } finally {
     isSubmitting = false;
-    setDisabled(false);
+    state = before;
+    render();
+    hideToast();
+    showError("通信に失敗したため、" + label + "が記録できたか確認できませんでした。\n画面を開き直して状態を確認してください。");
   }
 }
 
@@ -288,9 +341,15 @@ function showUnregistered(userId) {
   box.style.display = "block";
 }
 
-function showToast(msg) {
+function showToast(msg, isPending) {
   const t = document.getElementById("toast");
   t.textContent = msg;
+  if (isPending) {
+    const sp = document.createElement("span");
+    sp.className = "spinner";
+    t.prepend(sp);
+  }
+  t.classList.toggle("pending", !!isPending);
   t.classList.remove("hidden");
 }
 function hideToast() { document.getElementById("toast").classList.add("hidden"); }

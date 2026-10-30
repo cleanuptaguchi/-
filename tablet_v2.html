@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>オフィス共有打刻端末</title>
+<link rel="preconnect" href="https://script.google.com">
+<link rel="preconnect" href="https://script.googleusercontent.com">
 <style>
   :root {
     --primary: #0F766E;
@@ -120,6 +122,14 @@
     box-shadow: 0 8px 24px rgba(0,0,0,0.2);
   }
   .toast.error { background: var(--danger); }
+  .toast.pending { background: #334155; }
+  .spinner {
+    display: inline-block; width: 14px; height: 14px; border: 2px solid currentColor; border-right-color: transparent;
+    border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: -2px; margin-right: 6px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .staff-card.pending { pointer-events: none; opacity: 0.85; }
+  .staff-card.pending .tag { background: #334155 !important; color: #fff !important; }
   .empty { text-align: center; color: var(--sub); padding: 40px; grid-column: 1 / -1; }
   .hidden { display: none !important; }
 </style>
@@ -167,7 +177,7 @@ const TABLET_KEY = new URLSearchParams(location.search).get("key") || "";
 
 let staffMembers = [];
 let selected = null;
-let busy = false;
+const pending = new Map(); // 送信中の人: employeeId -> 打刻種別
 let toastTimer = null;
 
 function esc(s) {
@@ -178,7 +188,7 @@ async function init() {
   tickClock();
   setInterval(tickClock, 1000);
   await fetchData();
-  setInterval(() => { if (!busy && !selected) fetchData(); }, 30000);
+  setInterval(() => { if (pending.size === 0 && !selected) fetchData(); }, 30000);
 }
 
 function tickClock() {
@@ -196,6 +206,7 @@ async function fetchData() {
       showToast(data.message || "データを取得できませんでした。", true);
       return;
     }
+    if (pending.size > 0) return; // 送信中は画面の先回り表示を上書きしない
     staffMembers = data.staffMembers;
     render();
     document.getElementById("lastUpdate").textContent = `更新 ${data.updatedAt}`;
@@ -224,12 +235,14 @@ function renderGrid() {
     return;
   }
   grid.innerHTML = list.map(s => {
-    const cls = s.status === "勤務中" ? "working" : s.status === "退勤済" ? "done" : "";
+    const p = pending.get(s.employeeId);
+    const cls = (s.status === "勤務中" ? "working" : s.status === "退勤済" ? "done" : "") + (p ? " pending" : "");
+    const tag = p ? `<span class="spinner"></span>${p === "clockIn" ? "出勤" : "退勤"}を記録中…` : esc(s.status);
     return `
       <div class="staff-card ${cls}" data-id="${esc(s.employeeId)}">
         ${s.needsCheck ? '<span class="check">要確認</span>' : ""}
         <div class="name">${esc(s.name)}</div>
-        <span class="tag">${esc(s.status)}</span>
+        <span class="tag">${tag}</span>
         <div class="sub">${esc(statusLine(s))}</div>
       </div>`;
   }).join("");
@@ -263,7 +276,7 @@ function renderStatusList() {
 
 function openModal(employeeId) {
   const s = staffMembers.find(x => x.employeeId === employeeId);
-  if (!s) return;
+  if (!s || pending.has(employeeId)) return;
   selected = s;
   const working = s.status === "勤務中";
   document.getElementById("mName").textContent = `${s.name} さん`;
@@ -302,54 +315,86 @@ function closeModal() {
   document.getElementById("overlay").classList.add("hidden");
 }
 document.getElementById("mCancel").onclick = closeModal;
-document.getElementById("overlay").addEventListener("click", e => { if (e.target.id === "overlay" && !busy) closeModal(); });
+document.getElementById("overlay").addEventListener("click", e => { if (e.target.id === "overlay") closeModal(); });
+
+function hhmm(d) { return d.toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit", hour12: false }); }
+
+/** サーバーの返事を待たずに、打刻後の状態を先に画面へ出す（楽観的UI） */
+function optimistic(s, type, job) {
+  const t = hhmm(new Date());
+  const sessions = (s.sessions || []).map(x => Object.assign({}, x));
+  if (type === "clockIn") {
+    sessions.push({ start: t, end: "", job: job || (s.jobs || [])[0] || "", location: "オフィス", status: "勤務中" });
+    return Object.assign({}, s, { status: "勤務中", since: t, openLocation: "オフィス", sessions });
+  }
+  const open = [...sessions].reverse().find(x => !x.end);
+  if (open) { open.end = t; open.status = "完了"; }
+  return Object.assign({}, s, { status: "退勤済", since: null, openLocation: null, sessions });
+}
 
 async function punch(staff, type, job) {
-  if (busy) return;
-  busy = true;
-  document.querySelectorAll("#mButtons button").forEach(b => { b.disabled = true; });
-  document.getElementById("mCancel").disabled = true;
+  const id = staff.employeeId;
+  if (pending.has(id)) return;
+  const i = staffMembers.findIndex(x => x.employeeId === id);
+  const before = staffMembers[i];
+  const label = type === "clockIn" ? "出勤" : "退勤";
 
+  // 1) すぐに画面を更新して閉じる（次の人がすぐ使える）
+  pending.set(id, type);
+  if (i >= 0) staffMembers[i] = optimistic(before, type, job);
+  closeModal();
+  render();
+  showToast(`${staff.name}さんの${label}を記録しています…`, "pending");
+
+  // 2) 裏でサーバーに送る
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 25000);
   try {
     const res = await fetch(GAS_WEB_APP_URL, {
       method: "POST",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify({ action: "punch", source: "tablet", key: TABLET_KEY, employeeId: staff.employeeId, type: type, job: job })
+      body: JSON.stringify({ action: "punch", source: "tablet", key: TABLET_KEY, employeeId: id, type: type, job: job }),
+      signal: ctrl.signal
     });
     const data = await res.json();
-    closeModal();
+    pending.delete(id);
+    const k = staffMembers.findIndex(x => x.employeeId === id);
     if (data.ok) {
-      showToast(data.message);
-      // 返ってきた最新状態をすぐ反映
-      const i = staffMembers.findIndex(x => x.employeeId === staff.employeeId);
-      if (i >= 0) {
-        staffMembers[i] = Object.assign({}, staffMembers[i], {
+      if (k >= 0) {
+        staffMembers[k] = Object.assign({}, staffMembers[k], {
           status: data.status, since: data.since, openLocation: data.openLocation,
           sessions: data.sessions, todayNet: data.todayNet, needsCheck: data.needsCheck
         });
-        render();
       }
+      render();
+      showToast("✓ " + data.message);
     } else {
-      showToast(data.message || "打刻に失敗しました。", true);
+      if (k >= 0 && before) staffMembers[k] = before; // 元に戻す
+      render();
+      showToast(data.message || `${label}を記録できませんでした。`, "error");
       fetchData();
     }
   } catch (err) {
     console.error(err);
-    closeModal();
-    showToast("通信エラーが発生しました。もう一度お試しください。", true);
+    pending.delete(id);
+    const k = staffMembers.findIndex(x => x.employeeId === id);
+    if (k >= 0 && before) staffMembers[k] = before;
+    render();
+    showToast(`通信エラーで${label}を確認できませんでした。\n表示を確かめて、必要ならもう一度押してください。`, "error");
+    setTimeout(fetchData, 1500); // 実際に記録されたかを確認して表示を合わせる
   } finally {
-    busy = false;
-    document.getElementById("mCancel").disabled = false;
+    clearTimeout(timer);
   }
 }
 
-function showToast(msg, isError) {
+function showToast(msg, kind) {
   const t = document.getElementById("toast");
-  t.textContent = msg;
-  t.classList.toggle("error", !!isError);
+  t.innerHTML = (kind === "pending" ? '<span class="spinner"></span>' : "") + esc(msg);
+  t.classList.toggle("error", kind === "error" || kind === true);
+  t.classList.toggle("pending", kind === "pending");
   t.classList.remove("hidden");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.add("hidden"), isError ? 6000 : 3500);
+  if (kind !== "pending") toastTimer = setTimeout(() => t.classList.add("hidden"), kind ? 6000 : 3500);
 }
 
 init();
