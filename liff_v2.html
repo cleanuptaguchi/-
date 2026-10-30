@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>勤怠打刻</title>
+<script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<style>
+  :root {
+    --ink: #1C2B2D;
+    --sub: #5B6E6C;
+    --bg: #FFFFFF;
+    --working: #0F766E;
+    --working-bg: #E1F2EF;
+    --off: #6B7280;
+    --off-bg: #EEEFF1;
+    --danger: #B42318;
+    --warn-bg: #FFF6D6;
+    --warn: #8A5A00;
+    --border: #DCE3E2;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic", sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    -webkit-tap-highlight-color: transparent;
+  }
+  .wrap { max-width: 480px; margin: 0 auto; padding: 24px 20px 40px; }
+  .header { text-align: center; margin-bottom: 16px; }
+  .header .name { font-size: 18px; font-weight: 700; }
+  .header .place { font-size: 13px; color: var(--sub); margin-top: 4px; }
+  .status-card {
+    border-radius: 20px; padding: 28px 20px; text-align: center;
+    background: var(--off-bg); border: 1px solid var(--border);
+  }
+  .status-card.working { background: var(--working-bg); }
+  .status-card .label { font-size: 14px; color: var(--sub); margin-bottom: 8px; }
+  .status-card .status-text { font-size: 30px; font-weight: 700; color: var(--off); }
+  .status-card.working .status-text { color: var(--working); }
+  .status-card .time-text { margin-top: 10px; font-size: 14px; color: var(--sub); }
+  .notice {
+    margin-top: 14px; padding: 12px 14px; border-radius: 10px;
+    background: var(--warn-bg); color: var(--warn); font-size: 14px; line-height: 1.6;
+  }
+  .actions { margin-top: 24px; }
+  button {
+    font-family: inherit; border: none; border-radius: 14px; padding: 18px;
+    font-size: 18px; font-weight: 700; cursor: pointer; width: 100%;
+  }
+  .btn-primary { background: var(--working); color: #FFFFFF; }
+  .btn-primary.out { background: #4B5563; }
+  .actions button + button { margin-top: 10px; }
+  .btn-sub { background: var(--off-bg); color: var(--ink); font-size: 14px; padding: 10px; margin-top: 10px; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .sessions { margin-top: 24px; }
+  .sessions h3 { font-size: 14px; color: var(--sub); margin: 0 0 8px; font-weight: 600; }
+  .session {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; margin-bottom: 8px; font-size: 15px;
+  }
+  .session .loc { font-size: 12px; color: var(--sub); margin-left: 6px; }
+  .session .net { font-size: 13px; color: var(--sub); }
+  .total { text-align: right; font-size: 14px; color: var(--sub); }
+  .error-box {
+    margin-top: 16px; padding: 12px 14px; border-radius: 10px;
+    background: #FDECEA; color: var(--danger); font-size: 14px; line-height: 1.6; display: none; white-space: pre-line;
+  }
+  .id-box {
+    margin-top: 10px; padding: 10px; border-radius: 8px; background: #fff; border: 1px dashed var(--danger);
+    font-family: monospace; font-size: 13px; word-break: break-all; color: var(--ink);
+  }
+  .loading { text-align: center; color: var(--sub); font-size: 15px; padding: 60px 0; }
+  .toast {
+    margin-top: 16px; padding: 14px 16px; border-radius: 10px;
+    background: var(--working-bg); color: var(--working); font-size: 15px; font-weight: 600; text-align: center; white-space: pre-line;
+  }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div id="loadingView" class="loading">読み込み中です…</div>
+
+  <div id="mainView" class="hidden">
+    <div id="staffView" class="hidden">
+      <div class="header">
+        <div class="name" id="staffName"></div>
+        <div class="place" id="placeText"></div>
+      </div>
+
+      <div class="status-card" id="statusCard">
+        <div class="label">現在のステータス</div>
+        <div class="status-text" id="statusText">-</div>
+        <div class="time-text" id="timeDetail"></div>
+      </div>
+
+      <div class="notice hidden" id="notice"></div>
+
+      <div class="actions" id="actions"></div>
+
+      <div class="toast hidden" id="toast"></div>
+
+      <div class="sessions hidden" id="sessionsBox">
+        <h3>今日の勤務</h3>
+        <div id="sessionList"></div>
+        <div class="total" id="totalText"></div>
+      </div>
+    </div>
+
+    <div class="error-box" id="errorBox"></div>
+  </div>
+</div>
+
+<script>
+// ==== 設定 ====
+const GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbwkd-Ek8L3X1cAvP3_yj97nGEm_vnlZnpjnXnElqiqp99QtXcFXZrsVOlxz8tk-QlYX/exec";
+const LIFF_ID = "2011535057-G3xrMYN6";
+
+let profile = null;
+let state = null;      // サーバーから返ってきた最新の状態
+let isSubmitting = false;
+
+window.addEventListener("beforeunload", function (e) {
+  if (isSubmitting) {
+    e.preventDefault();
+    e.returnValue = "データ送信中です。本当にこのページを離れますか？";
+    return e.returnValue;
+  }
+});
+
+async function main() {
+  try {
+    await liff.init({ liffId: LIFF_ID });
+    if (!liff.isLoggedIn()) {
+      liff.login();
+      return;
+    }
+    profile = await liff.getProfile();
+    const data = await api("status");
+    handleResponse(data);
+  } catch (err) {
+    console.error(err);
+    showError("画面の読み込みに失敗しました。もう一度開き直してください。");
+  } finally {
+    document.getElementById("loadingView").classList.add("hidden");
+    document.getElementById("mainView").classList.remove("hidden");
+  }
+}
+
+/** GASへPOST（IDトークンで本人確認） */
+async function api(action, extra) {
+  const res = await fetch(GAS_WEB_APP_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify(Object.assign({
+      action: action,
+      source: "liff",
+      idToken: liff.getIDToken(),
+      displayName: profile ? profile.displayName : ""
+    }, extra || {}))
+  });
+  return res.json();
+}
+
+function handleResponse(data) {
+  if (!data.ok) {
+    if (data.code === "UNREGISTERED") {
+      showUnregistered(data.userId);
+    } else {
+      showError(data.message || "エラーが発生しました。");
+    }
+    return false;
+  }
+  state = data;
+  hideError();
+  render();
+  return true;
+}
+
+function render() {
+  document.getElementById("staffView").classList.remove("hidden");
+  document.getElementById("staffName").textContent = state.name + " さん";
+  document.getElementById("placeText").textContent = "この画面の打刻は「" + state.workLocation + "」勤務として記録されます";
+
+  const working = state.status === "勤務中";
+  document.getElementById("statusCard").classList.toggle("working", working);
+  document.getElementById("statusText").textContent = state.status === "退勤済" ? "退勤済み" : state.status;
+
+  let detail = "";
+  if (working) detail = state.since + " から勤務中（" + state.openLocation + "）";
+  document.getElementById("timeDetail").textContent = detail;
+
+  // 注意表示
+  const notices = [];
+  if (working && state.openLocation !== state.workLocation) {
+    notices.push("現在「" + state.openLocation + "」で勤務中になっています。ここで退勤すると、その勤務が終了します。打刻し忘れの場合は管理者に修正を依頼してください。");
+  }
+  if (state.needsCheck) {
+    notices.push("退勤の打刻漏れがある記録があります。管理者に時刻を伝えてください。");
+  }
+  const notice = document.getElementById("notice");
+  notice.textContent = notices.join("\n\n");
+  notice.classList.toggle("hidden", notices.length === 0);
+
+  // 業務が複数ある人は「清掃で出勤」「事務で出勤」のようにボタンを分ける
+  const actions = document.getElementById("actions");
+  actions.innerHTML = "";
+  const jobs = state.jobs || [];
+  const make = (label, out, type, job) => {
+    const b = document.createElement("button");
+    b.className = "btn-primary" + (out ? " out" : "");
+    b.textContent = label;
+    b.onclick = () => punch(type, job);
+    actions.appendChild(b);
+  };
+  if (working) make("退勤する", true, "clockOut");
+  else if (jobs.length > 1) jobs.forEach(j => make(j + "で出勤", false, "clockIn", j));
+  else make(state.status === "退勤済" ? "もう一度出勤する" : "出勤する", false, "clockIn", jobs[0]);
+
+  // 今日の勤務一覧
+  const list = document.getElementById("sessionList");
+  list.innerHTML = "";
+  (state.sessions || []).forEach(s => {
+    const div = document.createElement("div");
+    div.className = "session";
+    const left = document.createElement("div");
+    left.textContent = s.start + " 〜 " + (s.end || (s.status === "勤務中" ? "勤務中" : "未退勤"));
+    const loc = document.createElement("span");
+    loc.className = "loc";
+    loc.textContent = (s.job ? s.job + "・" : "") + s.location;
+    left.appendChild(loc);
+    const right = document.createElement("div");
+    right.className = "net";
+    right.textContent = s.net ? s.net + "時間" : "";
+    div.appendChild(left);
+    div.appendChild(right);
+    list.appendChild(div);
+  });
+  document.getElementById("totalText").textContent = state.todayNet ? "今日の実働合計 " + state.todayNet + "時間" : "";
+  document.getElementById("sessionsBox").classList.toggle("hidden", !(state.sessions || []).length);
+}
+
+async function punch(type, job) {
+  if (isSubmitting) return;
+  hideError();
+  const setDisabled = v => document.querySelectorAll("#actions button").forEach(b => { b.disabled = v; });
+  setDisabled(true);
+  showToast((type === "clockIn" ? "出勤" : "退勤") + "を送信中です…");
+  isSubmitting = true;
+
+  try {
+    const data = await api("punch", { type: type, job: job });
+    if (handleResponse(data)) {
+      showToast(data.message);
+      setTimeout(hideToast, 4000);
+    } else {
+      hideToast();
+    }
+  } catch (err) {
+    console.error(err);
+    hideToast();
+    showError("通信に失敗しました。電波の良い場所で、もう一度お試しください。");
+  } finally {
+    isSubmitting = false;
+    setDisabled(false);
+  }
+}
+
+function showUnregistered(userId) {
+  const box = document.getElementById("errorBox");
+  box.innerHTML = "";
+  box.appendChild(document.createTextNode(
+    "このLINEアカウントはまだ勤怠システムに登録されていません。\n下のIDを管理者に伝えて、登録を依頼してください。"));
+  const idBox = document.createElement("div");
+  idBox.className = "id-box";
+  idBox.textContent = userId || "";
+  box.appendChild(idBox);
+  const copy = document.createElement("button");
+  copy.className = "btn-sub";
+  copy.textContent = "IDをコピー";
+  copy.onclick = async () => {
+    try { await navigator.clipboard.writeText(userId); copy.textContent = "コピーしました"; }
+    catch (_) { copy.textContent = "長押しでコピーしてください"; }
+  };
+  box.appendChild(copy);
+  box.style.display = "block";
+}
+
+function showToast(msg) {
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.classList.remove("hidden");
+}
+function hideToast() { document.getElementById("toast").classList.add("hidden"); }
+function showError(msg) {
+  const box = document.getElementById("errorBox");
+  box.textContent = msg;
+  box.style.display = "block";
+}
+function hideError() { document.getElementById("errorBox").style.display = "none"; }
+
+main();
+</script>
+</body>
+</html>
